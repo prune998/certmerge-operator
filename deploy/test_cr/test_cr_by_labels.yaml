@@ -1,0 +1,13 @@
+apiVersion: certmerge.lecentre.net/v1alpha1
+kind: CertMerge
+metadata:
+  name: "test-certmerge-labels"
+spec:
+  selector:
+    - labelselector:
+        matchLabels:
+          env: "dev"
+          certmerge: "true"
+      namespace: default
+  name: test-cert-labels
+  namespace: default

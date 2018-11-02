@@ -1,0 +1,12 @@
+apiVersion: certmerge.lecentre.net/v1alpha1
+kind: CertMerge
+metadata:
+  name: "test-certmerge-list"
+spec:
+  SecretList:
+  - name: test-ingressgateway-certs
+    namespace: default
+  - name: test-tls-secret
+    namespace: default
+  name: test-cert-operator
+  namespace: default
