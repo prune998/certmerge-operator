@@ -3,7 +3,7 @@ kind: CertMerge
 metadata:
   name: "test-certmerge-list"
 spec:
-  SecretList:
+  secretlist:
   - name: test-ingressgateway-certs
     namespace: default
   - name: test-tls-secret
