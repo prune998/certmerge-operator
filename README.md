@@ -33,3 +33,33 @@ Secrets are installed in the Default Namespace for testing purpose :
 kubectl -n default apply -f deploy/test_secrets
 kubectl -n default apply -f deploy/test_cr
 ```
+
+# TODO
+For the moment the operator is able to merge any secret from any namespace. As data inside the CertMerge's Secrets is not namespaced, you counld end with one secret overwriting the other.
+The solution is to name each secret's data by `<namespace>-<secret-name>.(key|crt)`. 
+I still need to check the implication when using the certificate with Istio.
+
+# API
+## CertMerge Custom Resource Definition 
+
+```
+
+apiVersion: certmerge.lecentre.net/v1alpha1
+kind: CertMerge
+metadata:
+  name: "test-certmerge-labels"
+spec:
+  selector:
+    - labelselector:
+        matchLabels:
+          env: "dev"
+          certmerge: "true"
+      namespace: default
+  secretlist:
+  - name: test-ingressgateway-certs
+    namespace: default
+  - name: test-tls-secret
+    namespace: default
+  name: test-cert-merge
+  namespace: default
+```

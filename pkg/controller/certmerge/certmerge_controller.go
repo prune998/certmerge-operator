@@ -22,24 +22,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
-
 // Add creates a new CertMerge Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
-	return add(mgr, newReconciler(mgr))
+	r := newReconciler(mgr)
+	return add(mgr, r, r.SecretToCertMerge)
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) reconcile.Reconciler {
+// orifginaly return reconcile.Reconciler
+func newReconciler(mgr manager.Manager) *ReconcileCertMerge {
 	return &ReconcileCertMerge{client: mgr.GetClient(), scheme: mgr.GetScheme()}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, mapFn handler.ToRequestsFunc) error {
 	// Create a new controller
 	c, err := controller.New("certmerge-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -52,12 +49,22 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// TODO(user): Modify this to be the types you create that are owned by the primary resource
-	// Watch for changes to secondary resource Secret and requeue the owner CertMerge
+	// This will trigger the Reconcile if the Merged Secret is modified
 	err = c.Watch(&source.Kind{Type: &corev1.Secret{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &certmergev1alpha1.CertMerge{},
 	})
+	if err != nil {
+		return err
+	}
+
+	// Watch for Secret change and process them through the SecretToCertMerge function
+	// This watch enables us to reconcile a CertMerge when a concerned Secret is changed (add/change/delete)
+	err = c.Watch(
+		&source.Kind{Type: &corev1.Secret{}},
+		&handler.EnqueueRequestsFromMapFunc{
+			ToRequests: mapFn,
+		})
 	if err != nil {
 		return err
 	}
@@ -73,6 +80,79 @@ type ReconcileCertMerge struct {
 	// that reads objects from the cache and writes to the apiserver
 	client client.Client
 	scheme *runtime.Scheme
+}
+
+// SecretToCertMerge check if a Secret is concerned by a CertMerge and enque the CertMerge for Reconcile
+func (r *ReconcileCertMerge) SecretToCertMerge(o handler.MapObject) []reconcile.Request {
+	result := []reconcile.Request{}
+
+	log.Infof("Secret %s/%s triggered in CertMerge", o.Meta.GetNamespace(), o.Meta.GetName())
+
+	// Fetch the triggered Secret Data
+	instance := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: o.Meta.GetNamespace(), Name: o.Meta.GetName()}
+	err := r.client.Get(context.TODO(), key, instance)
+	if err != nil {
+		log.Errorf("Unable to retrieve Secret %v from store: %v", key, err)
+		return nil
+	}
+
+	// sec will hold the CertMerge CR List we find
+	cml := &certmergev1alpha1.CertMergeList{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "CertMertgeList",
+			APIVersion: "certmerge.lecentre.net/v1alpha1",
+		},
+	}
+	listOps := &client.ListOptions{}
+
+	// search for all CertMerges
+	err = r.client.List(context.TODO(), listOps, cml)
+	if err != nil {
+		return result
+	}
+	for _, cm := range cml.Items {
+		if secretInCertMergeList(&cm, instance) || secretInCertMergeLabels(&cm, instance) {
+			// trigger the CertMerge Reconcile
+			result = append(result, reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: cm.Namespace, Name: cm.Name}})
+
+			log.Infof("CertMerge %s/%s added to Reconcile", cm.Namespace, cm.Name)
+		}
+	}
+	return result
+}
+
+// secretInCertMergeList returns true if the provided Secret Name is included in the CertMerge CR SecretList
+func secretInCertMergeList(certmerge *certmergev1alpha1.CertMerge, secret *corev1.Secret) bool {
+	// check if secret name is explicitely listed
+	for _, sd := range certmerge.Spec.SecretList {
+		if sd.Name == secret.Name && sd.Namespace == secret.Namespace {
+			return true
+		}
+	}
+	return false
+}
+
+// secretInCertMergeLabels returns true if the provided Secret Labels match the Selector of the CertMerge CR
+func secretInCertMergeLabels(certmerge *certmergev1alpha1.CertMerge, secret *corev1.Secret) bool {
+	// check if secret labels match a CertMerge Selector
+	for _, se := range certmerge.Spec.Selector {
+		isOk := false
+		if se.Namespace == secret.Namespace {
+			for key, val := range se.LabelSelector.MatchLabels {
+				if value, ok := secret.Labels[key]; ok {
+					if value == val {
+						isOk = true
+					}
+				}
+			}
+		}
+		if isOk {
+			return true
+		}
+	}
+	return false
 }
 
 // Reconcile reads that state of the cluster for a CertMerge object and makes changes based on the state read
@@ -171,6 +251,8 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 				"namespace": instance.Namespace,
 				"labels":    sec.LabelSelector.MatchLabels,
 			}).Infof("found %d certificates to merge in %s/%s", len(secContent.Items), instance.Spec.SecretNamespace, instance.Spec.SecretName)
+
+			// add valid secret's data to the Merged Secret
 			for _, secCert := range secContent.Items {
 				log.WithFields(log.Fields{
 					"certmerge": instance.Name,
@@ -202,6 +284,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
+	// if the Secret already exist, Update it
 	log.Infof("Updating Secret %s/%s\n", secret.Namespace, secret.Name)
 	err = r.client.Update(context.TODO(), secret)
 	if err != nil {

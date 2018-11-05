@@ -36,7 +36,7 @@ type CertMergeSpec struct {
 	SecretName      string             `json:"name"`
 	Selector        []SecretSelector   `json:"selector"`
 	SecretNamespace string             `json:"namespace"`
-	SecretList      []SecretDefinition `json: "secretdefinition"`
+	SecretList      []SecretDefinition `json:"secretlist"`
 }
 
 // SecretSelector defines the needed parameters to search for secrets by Label
