@@ -22,24 +22,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
-
 // Add creates a new CertMerge Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
-	return add(mgr, newReconciler(mgr))
+	r := newReconciler(mgr)
+	return add(mgr, r, r.SecretToCertMerge)
 }
 
 // newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) reconcile.Reconciler {
+// orifginaly return reconcile.Reconciler
+func newReconciler(mgr manager.Manager) *ReconcileCertMerge {
 	return &ReconcileCertMerge{client: mgr.GetClient(), scheme: mgr.GetScheme()}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
-func add(mgr manager.Manager, r reconcile.Reconciler) error {
+func add(mgr manager.Manager, r reconcile.Reconciler, mapFn handler.ToRequestsFunc) error {
 	// Create a new controller
 	c, err := controller.New("certmerge-controller", mgr, controller.Options{Reconciler: r})
 	if err != nil {
@@ -62,6 +59,21 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
+	// controller is a controller.controller
+	err = c.Watch(
+		&source.Kind{Type: &corev1.Secret{}},
+		&handler.EnqueueRequestsFromMapFunc{
+			ToRequests: mapFn,
+		})
+	if err != nil {
+		return err
+	}
+	// Watch for changes on Secrets
+	// err = c.Watch(&source.Kind{Type: &corev1.Secret{}}, &handler.EnqueueRequestForObject{})
+	// if err != nil {
+	// 	return err
+	// }
+
 	return nil
 }
 
@@ -73,6 +85,14 @@ type ReconcileCertMerge struct {
 	// that reads objects from the cache and writes to the apiserver
 	client client.Client
 	scheme *runtime.Scheme
+}
+
+// SecretToCertMerge check if a Secret is concerned by a CertMerge and enque the CertMerge for Reconcile
+func (r *ReconcileCertMerge) SecretToCertMerge(o handler.MapObject) []reconcile.Request {
+	result := []reconcile.Request{}
+	log.Infof("Secret %s/%s triggered in CertMerge", o.Meta.GetNamespace(), o.Meta.GetName())
+	// here goes the logic to check if a secret change should trigger a CertMerge reconcile
+	return result
 }
 
 // Reconcile reads that state of the cluster for a CertMerge object and makes changes based on the state read
