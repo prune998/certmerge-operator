@@ -61,13 +61,17 @@ func add(mgr manager.Manager, r reconcile.Reconciler, mapFn handler.ToRequestsFu
 	}
 
 	// This predicate deduplicate the watch trigger if no data is modified inside the secret
+	// if the Secret is Deleted, don't send the delete event as we can trigger it from the update
 	var p predicate.Predicate
 	p = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			log.WithFields(log.Fields{
-				"type":      "update",
-				"predicate": e,
-			}).Infof("Secret Predicate")
+				"event": e,
+			}).Debugf("Update Predicate event")
+			// This update is in fact a Delete event, process it
+			if e.MetaNew.GetDeletionGracePeriodSeconds() != nil {
+				return true
+			}
 
 			// if old and new data is the same, don't reconcile
 			newObj := e.ObjectNew.DeepCopyObject().(*corev1.Secret)
@@ -78,20 +82,13 @@ func add(mgr manager.Manager, r reconcile.Reconciler, mapFn handler.ToRequestsFu
 
 			return true
 		},
-		// DeleteFunc: func(e event.DeleteEvent) bool {
-		// 	log.WithFields(log.Fields{
-		// 		"type":      "delete",
-		// 		"predicate": e,
-		// 	}).Infof("Secret Predicate")
-		// 	return true
-		// },
-		// CreateFunc: func(e event.CreateEvent) bool {
-		// 	log.WithFields(log.Fields{
-		// 		"type":      "create",
-		// 		"predicate": e,
-		// 	}).Infof("Secret Predicate")
-		// 	return true
-		// },
+		// don't process any Delete event as we catch them in Update
+		DeleteFunc: func(e event.DeleteEvent) bool {
+			log.WithFields(log.Fields{
+				"event": e,
+			}).Debugf("Delete Predicate event")
+			return false
+		},
 	}
 
 	// Watch for Secret change and process them through the SecretTriggerCertMerge function
@@ -131,22 +128,10 @@ func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []recon
 			log.WithFields(log.Fields{
 				"secret":    o.Meta.GetName(),
 				"namespace": o.Meta.GetNamespace(),
-			}).Infof("Secret is already managed by CertMerge, dropping event")
+			}).Infof("Secret is managed by CertMerge, dropping event")
 			return nil
 		}
 	}
-
-	// also skip if the secret is in deletion phase as it was already triggered
-	// this is to be removed as this case should be handled by the predicate
-	// if o.Meta.GetDeletionGracePeriodSeconds() != nil {
-	// 	log.WithFields(log.Fields{
-	// 		"secret":              o.Meta.GetName(),
-	// 		"namespace":           o.Meta.GetNamespace(),
-	// 		"DeletionTimestamp":   o.Meta.GetDeletionTimestamp(),
-	// 		"DeletionGracePeriod": o.Meta.GetDeletionGracePeriodSeconds(),
-	// 	}).Infof("Secret is in Delete phase, dropping event")
-	// 	return nil
-	// }
 
 	log.WithFields(log.Fields{
 		"secret":    o.Meta.GetName(),
@@ -169,10 +154,9 @@ func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []recon
 			APIVersion: "certmerge.lecentre.net/v1alpha1",
 		},
 	}
-	listOps := &client.ListOptions{}
 
 	// Get all CertMerges
-	err = r.client.List(context.TODO(), listOps, cml)
+	err = r.client.List(context.TODO(), nil, cml)
 	if err != nil {
 		return result
 	}
@@ -184,7 +168,7 @@ func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []recon
 			result = append(result, reconcile.Request{
 				NamespacedName: client.ObjectKey{Namespace: cm.Namespace, Name: cm.Name}})
 
-			log.Infof("CertMerge %s/%s added to Reconcile", cm.Namespace, cm.Name)
+			log.Infof("CertMerge %s/%s added to Reconcile List", cm.Namespace, cm.Name)
 		}
 	}
 	return result
@@ -258,10 +242,6 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 	// build the Cert Data from the provided secret List
 	if len(instance.Spec.SecretList) > 0 {
 		for _, sec := range instance.Spec.SecretList {
-			log.WithFields(log.Fields{
-				"certmerge": instance.Name,
-				"namespace": instance.Namespace,
-			}).Infof("looking for certificate %s/%s", sec.Namespace, sec.Name)
 			secContent, err := r.searchSecretByName(sec.Name, sec.Namespace)
 			if err != nil {
 				log.WithFields(log.Fields{
@@ -270,10 +250,6 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 				}).Errorf("requested certificate target not found, skipping (%s/%s) - %v", sec.Namespace, sec.Name, err)
 				continue
 			}
-			log.WithFields(log.Fields{
-				"certmerge": instance.Name,
-				"namespace": instance.Namespace,
-			}).Infof("found certificate %s/%s for merge", secContent.Namespace, secContent.Name)
 
 			// search for key
 			if secContent.Type != corev1.SecretTypeTLS {
@@ -283,6 +259,12 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 				}).Infof("certificate %s/%s is not of TLS type, skipping", secContent.Namespace, secContent.Name)
 				continue
 			}
+
+			log.WithFields(log.Fields{
+				"certmerge": instance.Name,
+				"namespace": instance.Namespace,
+			}).Infof("adding certificate %s/%s to merge list", secContent.Namespace, secContent.Name)
+
 			certData[sec.Name+".crt"] = secContent.Data["tls.crt"]
 			certData[sec.Name+".key"] = secContent.Data["tls.key"]
 		}
@@ -297,7 +279,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 					"certmerge": instance.Name,
 					"namespace": instance.Namespace,
 					"labels":    sec.LabelSelector.MatchLabels,
-				}).Errorf("no labels defined in Selector")
+				}).Errorf("no labels defined in Selector, nothing to merge")
 				continue
 			}
 
@@ -308,7 +290,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 					"certmerge": instance.Name,
 					"namespace": instance.Namespace,
 					"labels":    sec.LabelSelector.MatchLabels,
-				}).Errorf("no certificates matching labels %v in %s) - %v", sec.LabelSelector.MatchLabels, sec.Namespace, err)
+				}).Errorf("no certificates matching labels %v in %s, skipping - %v", sec.LabelSelector.MatchLabels, sec.Namespace, err)
 				continue
 			}
 
@@ -338,24 +320,39 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 	found := &corev1.Secret{}
 	err = r.client.Get(context.TODO(), types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		log.Infof("Creating a new Secret %s/%s\n", secret.Namespace, secret.Name)
+		log.WithFields(log.Fields{
+			"certmerge": instance.Name,
+			"namespace": instance.Namespace,
+		}).Infof("Creating a new Secret %s/%s\n", secret.Namespace, secret.Name)
+
 		err = r.client.Create(context.TODO(), secret)
 		if err != nil {
-			log.Errorf("Error creating new Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
+			log.WithFields(log.Fields{
+				"certmerge": instance.Name,
+				"namespace": instance.Namespace,
+			}).Errorf("Error creating new Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
 			return reconcile.Result{}, err
 		}
 
 		// Secret created successfully - don't requeue
 		return reconcile.Result{}, nil
 	} else if err != nil {
+		// unknown error
 		return reconcile.Result{}, err
 	}
 
 	// if the Secret already exist, Update it
-	log.Infof("Updating Secret %s/%s\n", secret.Namespace, secret.Name)
+	log.WithFields(log.Fields{
+		"certmerge": instance.Name,
+		"namespace": instance.Namespace,
+	}).Infof("Updating Secret %s/%s\n", secret.Namespace, secret.Name)
+
 	err = r.client.Update(context.TODO(), secret)
 	if err != nil {
-		log.Errorf("Error updating Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
+		log.WithFields(log.Fields{
+			"certmerge": instance.Name,
+			"namespace": instance.Namespace,
+		}).Errorf("Error updating Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
 		return reconcile.Result{}, err
 	}
 	return reconcile.Result{}, nil

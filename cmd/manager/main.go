@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"runtime"
 
 	"github.com/prune998/certmerge-operator/pkg/apis"
@@ -23,20 +24,25 @@ func printVersion() {
 }
 
 var (
-	logLevel = flag.String("loglevel", log.WarnLevel.String(), "the log level to display")
+	logLevel       = flag.String("loglevel", log.WarnLevel.String(), "the log level to display")
+	displayVersion = flag.Bool("version", false, "Show version and quit")
 )
 
 func main() {
 	flag.Parse()
-	printVersion()
+
+	if *displayVersion {
+		printVersion()
+		os.Exit(0)
+	}
 
 	// set logs in json format
 	myLogLevel, err := log.ParseLevel(*logLevel)
 	if err != nil {
 		myLogLevel = log.WarnLevel
 	}
-	log.SetFormatter(&log.JSONFormatter{})
 	log.SetLevel(myLogLevel)
+	log.SetFormatter(&log.JSONFormatter{})
 
 	// Get a config to talk to the apiserver
 	cfg, err := config.GetConfig()
