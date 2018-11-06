@@ -34,3 +34,5 @@ spec:
                   fieldPath: metadata.name
             - name: OPERATOR_NAME
               value: "certmerge-operator"
+            - name: "LOGLEVEL"
+              value: "INFO"

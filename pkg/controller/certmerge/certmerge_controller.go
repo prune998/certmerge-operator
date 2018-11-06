@@ -5,8 +5,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
+	"github.com/google/go-cmp/cmp"
 	certmergev1alpha1 "github.com/prune998/certmerge-operator/pkg/apis/certmerge/v1alpha1"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,8 +16,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
@@ -26,7 +28,7 @@ import (
 // and Start it when the Manager is Started.
 func Add(mgr manager.Manager) error {
 	r := newReconciler(mgr)
-	return add(mgr, r, r.SecretToCertMerge)
+	return add(mgr, r, r.SecretTriggerCertMerge)
 }
 
 // newReconciler returns a new reconcile.Reconciler
@@ -58,13 +60,49 @@ func add(mgr manager.Manager, r reconcile.Reconciler, mapFn handler.ToRequestsFu
 		return err
 	}
 
-	// Watch for Secret change and process them through the SecretToCertMerge function
-	// This watch enables us to reconcile a CertMerge when a concerned Secret is changed (add/change/delete)
+	// This predicate deduplicate the watch trigger if no data is modified inside the secret
+	var p predicate.Predicate
+	p = predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			log.WithFields(log.Fields{
+				"type":      "update",
+				"predicate": e,
+			}).Infof("Secret Predicate")
+
+			// if old and new data is the same, don't reconcile
+			newObj := e.ObjectNew.DeepCopyObject().(*corev1.Secret)
+			oldObj := e.ObjectOld.DeepCopyObject().(*corev1.Secret)
+			if cmp.Equal(newObj.Data, oldObj.Data) {
+				return false
+			}
+
+			return true
+		},
+		// DeleteFunc: func(e event.DeleteEvent) bool {
+		// 	log.WithFields(log.Fields{
+		// 		"type":      "delete",
+		// 		"predicate": e,
+		// 	}).Infof("Secret Predicate")
+		// 	return true
+		// },
+		// CreateFunc: func(e event.CreateEvent) bool {
+		// 	log.WithFields(log.Fields{
+		// 		"type":      "create",
+		// 		"predicate": e,
+		// 	}).Infof("Secret Predicate")
+		// 	return true
+		// },
+	}
+
+	// Watch for Secret change and process them through the SecretTriggerCertMerge function
+	// This watch enables us to reconcile a CertMerge when a concerned Secret is changed (create/update/delete)
 	err = c.Watch(
 		&source.Kind{Type: &corev1.Secret{}},
 		&handler.EnqueueRequestsFromMapFunc{
 			ToRequests: mapFn,
-		})
+		},
+		p,
+	)
 	if err != nil {
 		return err
 	}
@@ -82,11 +120,38 @@ type ReconcileCertMerge struct {
 	scheme *runtime.Scheme
 }
 
-// SecretToCertMerge check if a Secret is concerned by a CertMerge and enque the CertMerge for Reconcile
-func (r *ReconcileCertMerge) SecretToCertMerge(o handler.MapObject) []reconcile.Request {
+// SecretTriggerCertMerge check if a Secret is concerned by a CertMerge and enque the CertMerge for Reconcile
+func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []reconcile.Request {
 	result := []reconcile.Request{}
 
-	log.Infof("Secret %s/%s triggered in CertMerge", o.Meta.GetNamespace(), o.Meta.GetName())
+	// drop secrets if the Operator is the Onwer
+	// we don't support merging an already merged secret
+	for _, owner := range o.Meta.GetOwnerReferences() {
+		if owner.Kind == "CertMerge" {
+			log.WithFields(log.Fields{
+				"secret":    o.Meta.GetName(),
+				"namespace": o.Meta.GetNamespace(),
+			}).Infof("Secret is already managed by CertMerge, dropping event")
+			return nil
+		}
+	}
+
+	// also skip if the secret is in deletion phase as it was already triggered
+	// this is to be removed as this case should be handled by the predicate
+	// if o.Meta.GetDeletionGracePeriodSeconds() != nil {
+	// 	log.WithFields(log.Fields{
+	// 		"secret":              o.Meta.GetName(),
+	// 		"namespace":           o.Meta.GetNamespace(),
+	// 		"DeletionTimestamp":   o.Meta.GetDeletionTimestamp(),
+	// 		"DeletionGracePeriod": o.Meta.GetDeletionGracePeriodSeconds(),
+	// 	}).Infof("Secret is in Delete phase, dropping event")
+	// 	return nil
+	// }
+
+	log.WithFields(log.Fields{
+		"secret":    o.Meta.GetName(),
+		"namespace": o.Meta.GetNamespace(),
+	}).Infof("Secret update triggered, reconciling CertMerge CR")
 
 	// Fetch the triggered Secret Data
 	instance := &corev1.Secret{}
@@ -106,11 +171,13 @@ func (r *ReconcileCertMerge) SecretToCertMerge(o handler.MapObject) []reconcile.
 	}
 	listOps := &client.ListOptions{}
 
-	// search for all CertMerges
+	// Get all CertMerges
 	err = r.client.List(context.TODO(), listOps, cml)
 	if err != nil {
 		return result
 	}
+
+	// parse each CertMerge CR and reconcile them if needed
 	for _, cm := range cml.Items {
 		if secretInCertMergeList(&cm, instance) || secretInCertMergeLabels(&cm, instance) {
 			// trigger the CertMerge Reconcile

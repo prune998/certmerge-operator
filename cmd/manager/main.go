@@ -1,8 +1,6 @@
 package main
 
 import (
-	"flag"
-
 	"runtime"
 
 	"github.com/prune998/certmerge-operator/pkg/apis"
@@ -14,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 
+	"github.com/namsral/flag"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -23,21 +22,21 @@ func printVersion() {
 	log.Printf("operator-sdk Version: %v", sdkVersion.Version)
 }
 
+var (
+	logLevel = flag.String("loglevel", log.WarnLevel.String(), "the log level to display")
+)
+
 func main() {
-	printVersion()
 	flag.Parse()
+	printVersion()
 
 	// set logs in json format
+	myLogLevel, err := log.ParseLevel(*logLevel)
+	if err != nil {
+		myLogLevel = log.WarnLevel
+	}
 	log.SetFormatter(&log.JSONFormatter{})
-
-	// we watch all namespaces (manager.New option for namespace = "")
-	// namespace, err := k8sutil.GetWatchNamespace()
-	// if err != nil {
-	// 	log.Fatalf("failed to get watch namespace: %v", err)
-	// }
-
-	// TODO: Expose metrics port after SDK uses controller-runtime's dynamic client
-	// sdk.ExposeMetricsPort()
+	log.SetLevel(myLogLevel)
 
 	// Get a config to talk to the apiserver
 	cfg, err := config.GetConfig()
