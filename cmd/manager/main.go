@@ -25,6 +25,7 @@ func printVersion() {
 
 var (
 	logLevel       = flag.String("loglevel", log.WarnLevel.String(), "the log level to display")
+	logJSON        = flag.Bool("logjson", true, "log to stdlog using JSON format")
 	displayVersion = flag.Bool("version", false, "Show version and quit")
 )
 
@@ -36,13 +37,16 @@ func main() {
 		os.Exit(0)
 	}
 
-	// set logs in json format
+	// set log level and json format
 	myLogLevel, err := log.ParseLevel(*logLevel)
 	if err != nil {
 		myLogLevel = log.WarnLevel
 	}
 	log.SetLevel(myLogLevel)
-	log.SetFormatter(&log.JSONFormatter{})
+
+	if *logJSON {
+		log.SetFormatter(&log.JSONFormatter{})
+	}
 
 	// Get a config to talk to the apiserver
 	cfg, err := config.GetConfig()

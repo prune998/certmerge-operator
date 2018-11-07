@@ -2,6 +2,7 @@ package certmerge
 
 import (
 	"context"
+	"time"
 
 	log "github.com/sirupsen/logrus"
 
@@ -23,6 +24,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
+
+var _ reconcile.Reconciler = &ReconcileCertMerge{}
+
+// ReconcileCertMerge reconciles a CertMerge object
+type ReconcileCertMerge struct {
+	// This client, initialized using mgr.Client() above, is a split client
+	// that reads objects from the cache and writes to the apiserver
+	client client.Client
+	scheme *runtime.Scheme
+}
 
 // Add creates a new CertMerge Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -46,80 +57,66 @@ func add(mgr manager.Manager, r reconcile.Reconciler, mapFn handler.ToRequestsFu
 	}
 
 	// Watch for changes to primary resource CertMerge
-	err = c.Watch(&source.Kind{Type: &certmergev1alpha1.CertMerge{}}, &handler.EnqueueRequestForObject{})
-	if err != nil {
+	if err := c.Watch(&source.Kind{Type: &certmergev1alpha1.CertMerge{}}, &handler.EnqueueRequestForObject{}); err != nil {
 		return err
 	}
 
 	// This will trigger the Reconcile if the Merged Secret is modified
-	err = c.Watch(&source.Kind{Type: &corev1.Secret{}}, &handler.EnqueueRequestForOwner{
-		IsController: true,
-		OwnerType:    &certmergev1alpha1.CertMerge{},
-	})
-	if err != nil {
+	if err := c.Watch(&source.Kind{Type: &corev1.Secret{}}, &handler.EnqueueRequestForOwner{IsController: true, OwnerType: &certmergev1alpha1.CertMerge{}}); err != nil {
 		return err
 	}
 
 	// This predicate deduplicate the watch trigger if no data is modified inside the secret
 	// if the Secret is Deleted, don't send the delete event as we can trigger it from the update
-	var p predicate.Predicate
-	p = predicate.Funcs{
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			log.WithFields(log.Fields{
-				"event": e,
-			}).Debugf("Update Predicate event")
-			// This update is in fact a Delete event, process it
-			if e.MetaNew.GetDeletionGracePeriodSeconds() != nil {
-				return true
-			}
 
-			// if old and new data is the same, don't reconcile
-			newObj := e.ObjectNew.DeepCopyObject().(*corev1.Secret)
-			oldObj := e.ObjectOld.DeepCopyObject().(*corev1.Secret)
-			if cmp.Equal(newObj.Data, oldObj.Data) {
-				return false
-			}
-
+	updateFunc := func(e event.UpdateEvent) bool {
+		log.WithFields(log.Fields{
+			"event": e,
+		}).Debugf("Update Predicate event")
+		// This update is in fact a Delete event, process it
+		if e.MetaNew.GetDeletionGracePeriodSeconds() != nil {
 			return true
-		},
-		// don't process any Delete event as we catch them in Update
-		DeleteFunc: func(e event.DeleteEvent) bool {
-			log.WithFields(log.Fields{
-				"event": e,
-			}).Debugf("Delete Predicate event")
+		}
+
+		// if old and new data is the same, don't reconcile
+		newObj := e.ObjectNew.DeepCopyObject().(*corev1.Secret)
+		oldObj := e.ObjectOld.DeepCopyObject().(*corev1.Secret)
+		if cmp.Equal(newObj.Data, oldObj.Data) {
 			return false
-		},
+		}
+
+		return true
+	}
+	deleteFunc := func(e event.DeleteEvent) bool {
+		log.WithFields(log.Fields{
+			"event": e,
+		}).Debugf("Delete Predicate event")
+		return false
 	}
 
 	// Watch for Secret change and process them through the SecretTriggerCertMerge function
 	// This watch enables us to reconcile a CertMerge when a concerned Secret is changed (create/update/delete)
-	err = c.Watch(
-		&source.Kind{Type: &corev1.Secret{}},
-		&handler.EnqueueRequestsFromMapFunc{
-			ToRequests: mapFn,
-		},
-		p,
-	)
-	if err != nil {
+	p := predicate.Funcs{
+		UpdateFunc: updateFunc,
+		// don't process any Delete event as we catch them in Update
+		DeleteFunc: deleteFunc,
+	}
+	s := &source.Kind{
+		Type: &corev1.Secret{},
+	}
+	h := &handler.EnqueueRequestsFromMapFunc{
+		ToRequests: mapFn,
+	}
+	if err := c.Watch(s, h, p); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-var _ reconcile.Reconciler = &ReconcileCertMerge{}
-
-// ReconcileCertMerge reconciles a CertMerge object
-type ReconcileCertMerge struct {
-	// This client, initialized using mgr.Client() above, is a split client
-	// that reads objects from the cache and writes to the apiserver
-	client client.Client
-	scheme *runtime.Scheme
-}
-
 // SecretTriggerCertMerge check if a Secret is concerned by a CertMerge and enque the CertMerge for Reconcile
 func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []reconcile.Request {
-	result := []reconcile.Request{}
+	var result []reconcile.Request
 
 	// drop secrets if the Operator is the Onwer
 	// we don't support merging an already merged secret
@@ -166,8 +163,7 @@ func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []recon
 	}
 
 	// Get all CertMerges
-	err = r.client.List(context.TODO(), nil, cml)
-	if err != nil {
+	if err := r.client.List(context.TODO(), nil, cml); err != nil {
 		return result
 	}
 
@@ -222,20 +218,27 @@ func secretInCertMergeLabels(certmerge *certmergev1alpha1.CertMerge, secret *cor
 // The Controller will requeue the Request to be processed again if the returned error is non-nil or
 // Result.Requeue is true, otherwise upon completion it will remove the work from the queue.
 func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	log.Infof("Reconciling CertMerge %s/%s", request.Namespace, request.Name)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*2)
+	defer cancel()
+
+	log.WithFields(log.Fields{
+		"certmerge": request.Name,
+		"namespace": request.Namespace,
+	}).Infof("Reconciling CertMerge")
+
+	emptyRes := reconcile.Result{}
 
 	// Fetch the CertMerge instance
 	instance := &certmergev1alpha1.CertMerge{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
-	if err != nil {
+	if err := r.client.Get(ctx, request.NamespacedName, instance); err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
-			return reconcile.Result{}, nil
+			return emptyRes, nil
 		}
 		// Error reading the object - requeue the request.
-		return reconcile.Result{}, err
+		return emptyRes, err
 	}
 
 	// Define a new Secret object
@@ -243,7 +246,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 
 	// Set CertMerge instance as the owner and controller
 	if err := controllerutil.SetControllerReference(instance, secret, r.scheme); err != nil {
-		return reconcile.Result{}, err
+		return emptyRes, err
 	}
 
 	// create the DATA for the new secret based on the CertMerge request
@@ -252,7 +255,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 	// build the Cert Data from the provided secret List
 	if len(instance.Spec.SecretList) > 0 {
 		for _, sec := range instance.Spec.SecretList {
-			secContent, err := r.searchSecretByName(sec.Name, sec.Namespace)
+			secContent, err := r.searchSecretByName(ctx, sec.Name, sec.Namespace)
 			if err != nil {
 				log.WithFields(log.Fields{
 					"certmerge": instance.Name,
@@ -294,7 +297,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 			}
 
 			// search for Secrets using the API
-			secContent, err := r.searchSecretByLabel(sec.LabelSelector.MatchLabels, sec.Namespace)
+			secContent, err := r.searchSecretByLabel(ctx, sec.LabelSelector.MatchLabels, sec.Namespace)
 			if err != nil {
 				log.WithFields(log.Fields{
 					"certmerge": instance.Name,
@@ -328,27 +331,27 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 
 	// Check if this Secret already exists
 	found := &corev1.Secret{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		log.WithFields(log.Fields{
-			"certmerge": instance.Name,
-			"namespace": instance.Namespace,
-		}).Infof("Creating a new Secret %s/%s\n", secret.Namespace, secret.Name)
 
-		err = r.client.Create(context.TODO(), secret)
-		if err != nil {
+	if err := r.client.Get(ctx, types.NamespacedName{Name: secret.Name, Namespace: secret.Namespace}, found); err != nil {
+		if errors.IsNotFound(err) {
 			log.WithFields(log.Fields{
 				"certmerge": instance.Name,
 				"namespace": instance.Namespace,
-			}).Errorf("Error creating new Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
-			return reconcile.Result{}, err
-		}
+			}).Infof("Creating a new Secret %s/%s\n", secret.Namespace, secret.Name)
 
-		// Secret created successfully - don't requeue
-		return reconcile.Result{}, nil
-	} else if err != nil {
+			if err := r.client.Create(ctx, secret); err != nil {
+				log.WithFields(log.Fields{
+					"certmerge": instance.Name,
+					"namespace": instance.Namespace,
+				}).Errorf("Error creating new Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
+				return emptyRes, err
+			}
+
+			// Secret created successfully - don't requeue
+			return emptyRes, nil
+		}
 		// unknown error
-		return reconcile.Result{}, err
+		return emptyRes, err
 	}
 
 	// if the Secret already exist, Update it
@@ -357,15 +360,14 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 		"namespace": instance.Namespace,
 	}).Infof("Updating Secret %s/%s\n", secret.Namespace, secret.Name)
 
-	err = r.client.Update(context.TODO(), secret)
-	if err != nil {
+	if err := r.client.Update(ctx, secret); err != nil {
 		log.WithFields(log.Fields{
 			"certmerge": instance.Name,
 			"namespace": instance.Namespace,
 		}).Errorf("Error updating Secret %s/%s - %v\n", secret.Namespace, secret.Name, err)
-		return reconcile.Result{}, err
+		return emptyRes, err
 	}
-	return reconcile.Result{}, nil
+	return emptyRes, nil
 }
 
 // newSecretForCR returns an empty secret for holding the secrets merge
@@ -389,7 +391,10 @@ func newSecretForCR(cr *certmergev1alpha1.CertMerge) *corev1.Secret {
 }
 
 // search on secret by it's namespace:name
-func (r *ReconcileCertMerge) searchSecretByName(name, namespace string) (*corev1.Secret, error) {
+func (r *ReconcileCertMerge) searchSecretByName(ctx context.Context, name, namespace string) (*corev1.Secret, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second*2)
+	defer cancel()
+
 	sec := &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Secret",
@@ -400,15 +405,18 @@ func (r *ReconcileCertMerge) searchSecretByName(name, namespace string) (*corev1
 			Namespace: namespace,
 		},
 	}
-	err := r.client.Get(context.TODO(), types.NamespacedName{Name: name, Namespace: namespace}, sec)
-	if err != nil {
+
+	if err := r.client.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, sec); err != nil {
 		return nil, err
 	}
 	return sec, nil
 }
 
 // search all secrets with the supplied labels
-func (r *ReconcileCertMerge) searchSecretByLabel(ls map[string]string, namespace string) (*corev1.SecretList, error) {
+func (r *ReconcileCertMerge) searchSecretByLabel(ctx context.Context, ls map[string]string, namespace string) (*corev1.SecretList, error) {
+	ctx, cancel := context.WithTimeout(ctx, time.Second*2)
+	defer cancel()
+
 	// create the Search options
 	labelSelector := labels.SelectorFromSet(ls)
 	listOps := &client.ListOptions{LabelSelector: labelSelector}
@@ -422,8 +430,7 @@ func (r *ReconcileCertMerge) searchSecretByLabel(ls map[string]string, namespace
 	}
 
 	// search
-	err := r.client.List(context.TODO(), listOps, sec)
-	if err != nil {
+	if err := r.client.List(ctx, listOps, sec); err != nil {
 		return nil, err
 	}
 
