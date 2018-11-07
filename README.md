@@ -1,7 +1,20 @@
 # Description
 
-This Project aim to create a K8s Operator that can aggregate many TLS Secrets into one single Opaque Secret with many files.
-It uses the "new" Kubernetes Custom Resource Definition API and is build using the [Operator SDK Framework](https://github.com/operator-framework/operator-sdk)
+This Project aim to create a Kubernetes Operator that can aggregate many `TLS Secret` into one single `Opaque Secret` with many files.
+It uses the "new" [Kubernetes Custom Resource Definition API](https://kubernetes.io/docs/concepts/extend-kubernetes/api-extension/custom-resources/) and is build using the [Operator SDK Framework](https://github.com/operator-framework/operator-sdk)
+
+## Overview
+![certmerge-operator high level overview diagram](/docs/images/CertMerge-Operator.png)
+
+1. The user push Manifests to create some Certificates
+1. Cert-Manager is triggered and create to corresponding TLS Secrets
+1. CertMerge Operator watch for Secrets and is triggered when Cert-Manager create or update them
+1. CertMerge Operator also watch for CertMerge requests. In our case, we decided to merge ALL certificates with a Label certmerge=true into ONE SINGLE Opaque Secret.
+   This is due to Istio limitation to only mount one secret inside the Ingress Gateway.
+1. CertMerge Operator create the Istio’s needed Secret
+1. the Istio Ingress Gateway watch for Gateway Resources. Each Gateway is defined to use a different certificate name (coming from the same single Secret which is mounted at start)
+
+Read more detailed use in this [Blog Post](https://medium.com/@prune998/istio-1-0-2-envoy-cert-manager-lets-encrypt-for-tls-certificate-merge-7a774bff66c2)
 
 ## Use case
 
@@ -62,9 +75,15 @@ kubectl -n default apply -f deploy/test_cr
 ```
 
 # TODO
-For the moment the operator is able to merge any secret from any namespace. As data inside the CertMerge's Secrets is not namespaced, you could end with one secret overwriting another one with the same name from another namespace.
+
+
+- [ ] namespaced secrets  
+      For the moment the operator is able to merge any secret from any namespace. As data inside the CertMerge's Secrets is not namespaced, you could end with one secret overwriting another one with the same name from another namespace.
 The solution is to name each secret's data by `<namespace>-<secret-name>.(key|crt)`. 
 I still need to check the implication when using the certificate with Istio.
+- [ ] improve security  
+      The Operator can read any `Secret` in a `Namespace` and merge it in another `Namespace`. This is highly insecure and gives too much power over a sensible resource.
+- [ ] inform Istio (Envoy) when a file (a `Certificate`) inside a merged `Secret` is updated
 
 # API
 ## CertMerge Custom Resource Definition 
@@ -142,3 +161,7 @@ You can specify specific secrets to merge by listing them :
   - name: test-secret-2
     namespace: prod
 ```
+## Changelog
+
+The [list of releases](https://github.com/prune998/certmerge-operator/releases)
+is the best place to look for information on changes between releases.
