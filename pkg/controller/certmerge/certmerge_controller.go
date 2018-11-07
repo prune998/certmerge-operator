@@ -142,8 +142,18 @@ func (r *ReconcileCertMerge) SecretTriggerCertMerge(o handler.MapObject) []recon
 	instance := &corev1.Secret{}
 	key := client.ObjectKey{Namespace: o.Meta.GetNamespace(), Name: o.Meta.GetName()}
 	err := r.client.Get(context.TODO(), key, instance)
+	if errors.IsNotFound(err) {
+		// in this case it's a deleted secret, keep going
+		// as we don't have the secret anymore, we need to trigger all the CertMerge CR
+		// for the moment we do nothing and keep outdated secrets merged
+		log.WithFields(log.Fields{
+			"secret":    o.Meta.GetName(),
+			"namespace": o.Meta.GetNamespace(),
+		}).Infof("Secret not found, not reconciling any CertMerge CR")
+		return nil
+	}
 	if err != nil {
-		log.Errorf("Unable to retrieve Secret %v from store: %v", key, err)
+		log.Errorf("Error retrieving Secret %v from store: %v", key, err)
 		return nil
 	}
 
