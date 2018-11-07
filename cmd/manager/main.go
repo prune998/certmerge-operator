@@ -1,8 +1,7 @@
 package main
 
 import (
-	"flag"
-
+	"os"
 	"runtime"
 
 	"github.com/prune998/certmerge-operator/pkg/apis"
@@ -14,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/runtime/signals"
 
+	"github.com/namsral/flag"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -23,21 +23,30 @@ func printVersion() {
 	log.Printf("operator-sdk Version: %v", sdkVersion.Version)
 }
 
+var (
+	logLevel       = flag.String("loglevel", log.WarnLevel.String(), "the log level to display")
+	logJSON        = flag.Bool("logjson", true, "log to stdlog using JSON format")
+	displayVersion = flag.Bool("version", false, "Show version and quit")
+)
+
 func main() {
-	printVersion()
 	flag.Parse()
 
-	// set logs in json format
-	log.SetFormatter(&log.JSONFormatter{})
+	if *displayVersion {
+		printVersion()
+		os.Exit(0)
+	}
 
-	// we watch all namespaces (manager.New option for namespace = "")
-	// namespace, err := k8sutil.GetWatchNamespace()
-	// if err != nil {
-	// 	log.Fatalf("failed to get watch namespace: %v", err)
-	// }
+	// set log level and json format
+	myLogLevel, err := log.ParseLevel(*logLevel)
+	if err != nil {
+		myLogLevel = log.WarnLevel
+	}
+	log.SetLevel(myLogLevel)
 
-	// TODO: Expose metrics port after SDK uses controller-runtime's dynamic client
-	// sdk.ExposeMetricsPort()
+	if *logJSON {
+		log.SetFormatter(&log.JSONFormatter{})
+	}
 
 	// Get a config to talk to the apiserver
 	cfg, err := config.GetConfig()
