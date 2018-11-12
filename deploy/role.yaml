@@ -9,6 +9,8 @@ rules:
   resources:
   - events
   - secrets
+  - pods
+  - configmaps
   verbs:
   - '*'
 - apiGroups:
