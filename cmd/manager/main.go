@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"runtime"
 
 	"github.com/prune998/certmerge-operator/pkg/apis"
 	"github.com/prune998/certmerge-operator/pkg/controller"
 
+	"github.com/operator-framework/operator-sdk/pkg/leader"
 	sdkVersion "github.com/operator-framework/operator-sdk/version"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
@@ -58,6 +60,12 @@ func main() {
 	mgr, err := manager.New(cfg, manager.Options{Namespace: ""})
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	// Become the leader before proceeding
+	err = leader.Become(context.TODO(), "certmerge-operator")
+	if err != nil {
+		log.Panicf("Error becoming the leader - %v", err)
 	}
 
 	log.Info("Registering Components.")
