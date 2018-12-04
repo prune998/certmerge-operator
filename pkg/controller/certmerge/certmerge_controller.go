@@ -287,15 +287,6 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 	// building the Cert Data from the provided Labels
 	if len(instance.Spec.Selector) > 0 {
 		for _, sec := range instance.Spec.Selector {
-			// do nothing if labels search is empty to avoid getting all the secrets of the cluster
-			if len(sec.LabelSelector.MatchLabels) == 0 {
-				log.WithFields(log.Fields{
-					"certmerge": instance.Name,
-					"namespace": instance.Namespace,
-					"labels":    sec.LabelSelector.MatchLabels,
-				}).Errorf("no labels defined in Selector, nothing to merge")
-				continue
-			}
 
 			// search for Secrets using the API
 			secContent, err := r.searchSecretByLabel(ctx, sec.LabelSelector, sec.Namespace)
@@ -304,7 +295,7 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 					"certmerge": instance.Name,
 					"namespace": instance.Namespace,
 					"labels":    sec.LabelSelector.MatchLabels,
-				}).Errorf("no certificates matching labels %v in %s, skipping - %v", sec.LabelSelector.MatchLabels, sec.Namespace, err)
+				}).Errorf("no certificates matching Label Selector %v in %s, skipping - %v", sec.LabelSelector, sec.Namespace, err)
 				continue
 			}
 
