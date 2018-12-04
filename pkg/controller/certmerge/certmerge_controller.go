@@ -196,18 +196,22 @@ func secretInCertMergeList(certmerge *certmergev1alpha1.CertMerge, secret *corev
 func secretInCertMergeLabels(certmerge *certmergev1alpha1.CertMerge, secret *corev1.Secret) bool {
 	// check if secret labels match a CertMerge Selector
 	for _, se := range certmerge.Spec.Selector {
-		isOk := false
 		if se.Namespace == secret.Namespace {
-			for key, val := range se.LabelSelector.MatchLabels {
-				if value, ok := secret.Labels[key]; ok {
-					if value == val {
-						isOk = true
-					}
+
+			// create the labelSelector
+			labelSelector := labels.SelectorFromSet(se.LabelSelector.MatchLabels)
+			for _, r := range se.LabelSelector.MatchExpressions {
+				req, err := labels.NewRequirement(r.Key, selection.Operator(r.Operator), r.Values)
+				if err != nil {
+					return false
 				}
+				labelSelector = labelSelector.Add(*req)
 			}
-		}
-		if isOk {
-			return true
+
+			// make this secret as selected if it matches
+			if labelSelector.Matches(labels.Set(secret.ObjectMeta.Labels)) {
+				return true
+			}
 		}
 	}
 	return false
