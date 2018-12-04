@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -286,24 +287,15 @@ func (r *ReconcileCertMerge) Reconcile(request reconcile.Request) (reconcile.Res
 	// building the Cert Data from the provided Labels
 	if len(instance.Spec.Selector) > 0 {
 		for _, sec := range instance.Spec.Selector {
-			// do nothing if labels search is empty to avoid getting all the secrets of the cluster
-			if len(sec.LabelSelector.MatchLabels) == 0 {
-				log.WithFields(log.Fields{
-					"certmerge": instance.Name,
-					"namespace": instance.Namespace,
-					"labels":    sec.LabelSelector.MatchLabels,
-				}).Errorf("no labels defined in Selector, nothing to merge")
-				continue
-			}
 
 			// search for Secrets using the API
-			secContent, err := r.searchSecretByLabel(ctx, sec.LabelSelector.MatchLabels, sec.Namespace)
+			secContent, err := r.searchSecretByLabel(ctx, sec.LabelSelector, sec.Namespace)
 			if err != nil {
 				log.WithFields(log.Fields{
 					"certmerge": instance.Name,
 					"namespace": instance.Namespace,
 					"labels":    sec.LabelSelector.MatchLabels,
-				}).Errorf("no certificates matching labels %v in %s, skipping - %v", sec.LabelSelector.MatchLabels, sec.Namespace, err)
+				}).Errorf("no certificates matching Label Selector %v in %s, skipping - %v", sec.LabelSelector, sec.Namespace, err)
 				continue
 			}
 
@@ -413,12 +405,19 @@ func (r *ReconcileCertMerge) searchSecretByName(ctx context.Context, name, names
 }
 
 // search all secrets with the supplied labels
-func (r *ReconcileCertMerge) searchSecretByLabel(ctx context.Context, ls map[string]string, namespace string) (*corev1.SecretList, error) {
+func (r *ReconcileCertMerge) searchSecretByLabel(ctx context.Context, ls metav1.LabelSelector, namespace string) (*corev1.SecretList, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second*2)
 	defer cancel()
 
 	// create the Search options
-	labelSelector := labels.SelectorFromSet(ls)
+	labelSelector := labels.SelectorFromSet(ls.MatchLabels)
+	for _, r := range ls.MatchExpressions {
+		req, err := labels.NewRequirement(r.Key, selection.Operator(r.Operator), r.Values)
+		if err != nil {
+			return nil, err
+		}
+		labelSelector = labelSelector.Add(*req)
+	}
 	listOps := &client.ListOptions{LabelSelector: labelSelector}
 
 	// sec will hold the Secret List we find
