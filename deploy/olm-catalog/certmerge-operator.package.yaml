@@ -1,0 +1,4 @@
+packageName: certmerge-operator
+channels:
+- name: alpha
+  currentCSV: certmerge-operator.0.0.3

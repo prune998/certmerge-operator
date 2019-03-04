@@ -1,0 +1,118 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  creationTimestamp: null
+  name: certmerge-operator.v0.0.3
+  namespace: placeholder
+  annotations:
+    categories: "Secret Management"
+    certified: "false"
+    containerImage: docker.io/prune/certmerge-operator:0.0.3
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+    - kind: CertMerge
+      name: certmerges.certmerge.lecentre.net
+      version: v1alpha1
+      displayName: certmerge-operator
+      description: |
+        Represent a Selector to merge many TLS secrets into a regular secret with one file per secret
+  description: |
+    Certmerge Operator is a Kubernetes Operator that can aggregate many `TLS Secret` into one single `Opaque Secret` with many files.
+  keywords: ['secret', 'tls', 'open source']
+  displayName: Certmerge Operator
+  install:
+    spec:
+      clusterPermissions:
+      - rules:
+        - apiGroups:
+          - ""
+          resources:
+          - events
+          - secrets
+          - pods
+          - configmaps
+          verbs:
+          - '*'
+        - apiGroups:
+          - monitoring.coreos.com
+          resources:
+          - servicemonitors
+          verbs:
+          - get
+          - create
+        - apiGroups:
+          - certmerge.lecentre.net
+          resources:
+          - '*'
+          verbs:
+          - '*'
+        serviceAccountName: certmerge-operator
+      deployments:
+      - name: certmerge-operator
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              name: certmerge-operator
+          strategy: {}
+          template:
+            metadata:
+              creationTimestamp: null
+              labels:
+                name: certmerge-operator
+            spec:
+              containers:
+              - command:
+                - certmerge-operator
+                env:
+                - name: WATCH_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: OPERATOR_NAME
+                  value: certmerge-operator
+                - name: LOGLEVEL
+                  value: INFO
+                - name: LOGJSON
+                  value: "true"
+                image: prune/certmerge-operator:latest
+                imagePullPolicy: Always
+                name: certmerge-operator
+                ports:
+                - containerPort: 60000
+                  name: metrics
+                resources: {}
+              serviceAccountName: certmerge-operator
+    strategy: deployment
+  maturity: alpha
+  provider:
+    name: lecentre.net
+  version: 0.0.3
+  maintainers:
+  - name: Prune
+    email: prune@lecentre.net
+  labels:
+    name: certmerge-operator
+  selector:
+    matchLabels:
+    name: certmerge-operator
+  links:
+  - name: Blog
+    url: https://medium.com/@prune998/istio-1-0-2-envoy-cert-manager-lets-encrypt-for-tls-certificate-merge-7a774bff66c2
+  - name: Dicumentation
+    url: https://github.com/prune998/certmerge-operator/blob/master/README.md
+  installModes:
+  - type: OwnNamespace
+    supported: true
+  - type: SingleNamespace
+    supported: true
+  - type: MultiNamespace
+    supported: false
+  - type: AllNamespaces
+    supported: true
